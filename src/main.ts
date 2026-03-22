@@ -1,6 +1,7 @@
 import './pdf-setup.ts';
 import './style.css';
 import { getDocument } from 'pdfjs-dist';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import {
   collectBookmarksUpToDepth,
   maxBookmarkDepth,
@@ -8,7 +9,7 @@ import {
   type OutlineNode,
 } from './outline.ts';
 import { defaultChapterBasename, ensurePdfFilename } from './slug.ts';
-import { buildSplitZip, type SplitSegment } from './split-zip.ts';
+import { buildSplitZip, buildSinglePdf, type SplitSegment } from './split-zip.ts';
 
 type Mode = 'chapters' | 'manual';
 
@@ -41,6 +42,9 @@ const state = {
   zipBuilding: false,
   /** When set, show a real &lt;a download&gt; (Safari / Brave–safe). */
   zipReady: null as null | { url: string; filename: string },
+  previewEnabled: false,
+  /** Per-chapter page offset (0-based) relative to each chapter's startPage0. */
+  previewCurrentPages: {} as Record<number, number>,
 };
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -102,6 +106,13 @@ function duplicateNameIndices(names: string[]): Set<number> {
 /** Bumped on each new file so in-flight bookmark work is ignored after a new load. */
 let loadGeneration = 0;
 
+/** Bumped on every render() call so stale async preview renders abort themselves. */
+let renderGen = 0;
+
+/** Cached pdf.js document for preview rendering; reused across renders of the same file. */
+let previewPdf: PDFDocumentProxy | null = null;
+let previewPdfLoadGen = -1; // loadGeneration at the time previewPdf was opened
+
 async function resolveBookmarksInBackground(bytes: Uint8Array, outline: OutlineNode[], myGen: number): Promise<void> {
   const OUTLINE_TIMEOUT_MS = 120_000;
   try {
@@ -143,6 +154,9 @@ async function loadPdf(file: File): Promise<void> {
   state.busy = true;
   state.status = 'Loading PDF…';
   clearZipReady();
+  // Invalidate preview cache for the old file.
+  if (previewPdf) { void previewPdf.destroy().catch(() => {}); previewPdf = null; }
+  state.previewCurrentPages = {};
   render();
   try {
     const buf = new Uint8Array(await file.arrayBuffer());
@@ -236,6 +250,7 @@ function rebuildChapterRows(): void {
     state.chapterRows = [];
     return;
   }
+  state.previewCurrentPages = {}; // reset page offsets when chapters change
   const markers = markersForDepth(state.chapterDepth);
   const n = state.numPages;
   const rows: ChapterRow[] = [];
@@ -265,7 +280,65 @@ function applyDefaultManualNames(): void {
   });
 }
 
+// ─── Preview helpers ──────────────────────────────────────────────────────────
+
+async function ensurePreviewPdf(): Promise<PDFDocumentProxy | null> {
+  if (!state.pdfBytes) return null;
+  if (previewPdf && previewPdfLoadGen === loadGeneration) return previewPdf;
+  if (previewPdf) { void previewPdf.destroy().catch(() => {}); previewPdf = null; }
+  previewPdf = await getDocument({ data: state.pdfBytes.slice() }).promise;
+  previewPdfLoadGen = loadGeneration;
+  return previewPdf;
+}
+
+async function renderPreviews(myRenderGen: number): Promise<void> {
+  if (!state.previewEnabled) return;
+  const pdf = await ensurePreviewPdf();
+  if (!pdf || renderGen !== myRenderGen) return; // stale: DOM was replaced
+  const canvases = app.querySelectorAll<HTMLCanvasElement>('canvas[data-preview-idx]');
+  for (const canvas of Array.from(canvases)) {
+    if (renderGen !== myRenderGen) break;
+    const idx = Number(canvas.dataset.previewIdx);
+    const row = state.chapterRows[idx];
+    if (!row) continue;
+    const offset = state.previewCurrentPages[idx] ?? 0;
+    const absPage = row.startPage0 + offset + 1; // pdf.js getPage is 1-based
+    try {
+      const page = await pdf.getPage(absPage);
+      const baseVp = page.getViewport({ scale: 1 });
+      const scale = Math.min(160 / baseVp.width, 220 / baseVp.height);
+      const viewport = page.getViewport({ scale });
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      // pdfjs-dist 5.x requires canvas element directly; canvasContext is legacy.
+      await page.render({ canvas, viewport }).promise;
+      page.cleanup();
+    } catch { /* page temporarily unavailable during async rebuild */ }
+  }
+}
+
+async function downloadChapter(idx: number): Promise<void> {
+  const row = state.chapterRows[idx];
+  if (!row || !state.pdfBytes) return;
+  try {
+    const blob = await buildSinglePdf(state.pdfBytes, row.startPage0, row.endPage0);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = ensurePdfFilename(row.outputName);
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  } catch (err) {
+    state.status = `Download failed: ${err instanceof Error ? err.message : String(err)}`;
+    render();
+  }
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────────
+
 function render(): void {
+  renderGen++;
+  const myRenderGen = renderGen;
   const hasOutline = Boolean(state.outline?.length);
   const chapterNames = state.chapterRows.map((r) => ensurePdfFilename(r.outputName));
   const dupChapter =
@@ -332,22 +405,48 @@ function render(): void {
     </section>
 
     <section class="panel">
-      <h2>Chapters</h2>
+      <div class="panel-header">
+        <h2>Chapters</h2>
+        <button type="button" class="btn-small ${state.previewEnabled ? 'active' : ''}" data-action="toggle-preview">
+          ${state.previewEnabled ? 'Hide preview' : 'Show preview'}
+        </button>
+      </div>
       <p class="hint">Edit <strong>Output filename</strong> if two chapters collide. All names must be unique.</p>
       <div class="table-wrap">
         <table class="data">
           <thead>
-            <tr><th>#</th><th>Title</th><th>Pages</th><th>Output filename</th></tr>
+            <tr>
+              <th>#</th><th>Title</th><th>Pages</th><th>Output filename</th>
+              ${state.previewEnabled ? '<th class="preview-th">Preview</th>' : ''}
+            </tr>
           </thead>
           <tbody>
             ${state.chapterRows
               .map((row, i) => {
                 const dup = dupChapter.has(i);
+                const offset = state.previewCurrentPages[i] ?? 0;
+                const pageCount = row.endPage0 - row.startPage0 + 1;
                 return `<tr data-chapter-idx="${i}" class="${dup ? 'row-dup' : ''}">
                   <td>${i + 1}</td>
                   <td>${escapeHtml(row.title)}</td>
                   <td>${row.startPage0 + 1}–${row.endPage0 + 1}</td>
-                  <td><input type="text" class="filename-input" data-chapter-idx="${i}" value="${escapeHtml(row.outputName)}" /></td>
+                  <td>
+                    <div class="filename-cell">
+                      <input type="text" class="filename-input" data-chapter-idx="${i}" value="${escapeHtml(row.outputName)}" />
+                      <button type="button" class="btn-small dl-btn" data-dl-chapter="${i}" title="Download this chapter">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      </button>
+                    </div>
+                  </td>
+                  ${state.previewEnabled ? `
+                  <td class="preview-cell">
+                    <canvas data-preview-idx="${i}"></canvas>
+                    <div class="preview-nav">
+                      <button type="button" class="preview-btn" data-preview-prev="${i}" ${offset === 0 ? 'disabled' : ''}>&#8249;</button>
+                      <span class="preview-pg">${offset + 1} / ${pageCount}</span>
+                      <button type="button" class="preview-btn" data-preview-next="${i}" ${offset >= pageCount - 1 ? 'disabled' : ''}>&#8250;</button>
+                    </div>
+                  </td>` : ''}
                 </tr>`;
               })
               .join('')}
@@ -473,6 +572,40 @@ function render(): void {
     input.addEventListener('change', () => render());
   });
 
+  // Toggle preview panel
+  app.querySelector('[data-action="toggle-preview"]')?.addEventListener('click', () => {
+    state.previewEnabled = !state.previewEnabled;
+    render();
+  });
+
+  // Per-chapter download buttons
+  app.querySelectorAll('[data-dl-chapter]').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = Number((el as HTMLElement).dataset.dlChapter);
+      void downloadChapter(idx);
+    });
+  });
+
+  // Preview page navigation
+  app.querySelectorAll('[data-preview-prev]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const idx = Number((el as HTMLElement).dataset.previewPrev);
+      state.previewCurrentPages[idx] = Math.max(0, (state.previewCurrentPages[idx] ?? 0) - 1);
+      render();
+    });
+  });
+  app.querySelectorAll('[data-preview-next]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const idx = Number((el as HTMLElement).dataset.previewNext);
+      const row = state.chapterRows[idx];
+      if (!row) return;
+      const max = row.endPage0 - row.startPage0;
+      state.previewCurrentPages[idx] = Math.min(max, (state.previewCurrentPages[idx] ?? 0) + 1);
+      render();
+    });
+  });
+
   app.querySelectorAll('.num-input[data-manual]').forEach((el) => {
     el.addEventListener('change', (e) => {
       const t = e.target as HTMLInputElement;
@@ -535,6 +668,10 @@ function render(): void {
     });
   });
 
+  // Kick off async canvas rendering after the synchronous DOM update settles.
+  if (state.previewEnabled && state.chapterRows.length > 0) {
+    void Promise.resolve().then(() => void renderPreviews(myRenderGen));
+  }
 }
 
 function escapeHtml(s: string): string {

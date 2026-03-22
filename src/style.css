@@ -157,6 +157,109 @@ select {
   color: #fdba74;
 }
 
+.btn-small.active {
+  background: #5b4cdb;
+  border-color: #5b4cdb;
+  color: #fff;
+}
+
+/* ── Panel header row (title + toggle button) ─────────────────────────────── */
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.65rem;
+}
+
+.panel-header h2 {
+  margin: 0;
+}
+
+/* ── Per-chapter download button ──────────────────────────────────────────── */
+.filename-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.filename-cell .filename-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.dl-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem;
+  line-height: 1;
+  color: #6b7280;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.dl-btn:hover {
+  color: #a78bfa;
+  border-color: #5b4cdb;
+}
+
+/* ── Preview column ───────────────────────────────────────────────────────── */
+.preview-th {
+  min-width: 170px;
+}
+
+.preview-cell {
+  vertical-align: top;
+  padding: 0.5rem 0.4rem;
+}
+
+.preview-cell canvas {
+  display: block;
+  width: 100%;
+  max-width: 160px;
+  height: auto;
+  border: 1px solid #2a2f3d;
+  border-radius: 4px;
+  background: #0d0f14;
+}
+
+.preview-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: #9aa0a6;
+}
+
+.preview-btn {
+  background: none;
+  border: 1px solid #3d4454;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  padding: 0.05rem 0.45rem;
+  font-size: 1.1rem;
+  line-height: 1.3;
+}
+
+.preview-btn:hover:not(:disabled) {
+  border-color: #5b4cdb;
+  color: #a78bfa;
+}
+
+.preview-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.preview-pg {
+  min-width: 3.2rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .actions {
   margin-top: 1.25rem;
 }
