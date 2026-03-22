@@ -42,7 +42,8 @@ const state = {
   zipBuilding: false,
   /** When set, show a real &lt;a download&gt; (Safari / Brave–safe). */
   zipReady: null as null | { url: string; filename: string },
-  previewEnabled: false,
+  /** Set of chapter indices whose preview panel is currently open. */
+  previewOpen: new Set<number>(),
   /** Per-chapter page offset (0-based) relative to each chapter's startPage0. */
   previewCurrentPages: {} as Record<number, number>,
 };
@@ -156,6 +157,7 @@ async function loadPdf(file: File): Promise<void> {
   clearZipReady();
   // Invalidate preview cache for the old file.
   if (previewPdf) { void previewPdf.destroy().catch(() => {}); previewPdf = null; }
+  state.previewOpen = new Set();
   state.previewCurrentPages = {};
   render();
   try {
@@ -250,6 +252,7 @@ function rebuildChapterRows(): void {
     state.chapterRows = [];
     return;
   }
+  state.previewOpen = new Set();
   state.previewCurrentPages = {}; // reset page offsets when chapters change
   const markers = markersForDepth(state.chapterDepth);
   const n = state.numPages;
@@ -292,7 +295,7 @@ async function ensurePreviewPdf(): Promise<PDFDocumentProxy | null> {
 }
 
 async function renderPreviews(myRenderGen: number): Promise<void> {
-  if (!state.previewEnabled) return;
+  if (state.previewOpen.size === 0) return;
   const pdf = await ensurePreviewPdf();
   if (!pdf || renderGen !== myRenderGen) return; // stale: DOM was replaced
   const canvases = app.querySelectorAll<HTMLCanvasElement>('canvas[data-preview-idx]');
@@ -405,27 +408,23 @@ function render(): void {
     </section>
 
     <section class="panel">
-      <div class="panel-header">
-        <h2>Chapters</h2>
-        <button type="button" class="btn-small ${state.previewEnabled ? 'active' : ''}" data-action="toggle-preview">
-          ${state.previewEnabled ? 'Hide preview' : 'Show preview'}
-        </button>
-      </div>
+      <h2>Chapters</h2>
       <p class="hint">Edit <strong>Output filename</strong> if two chapters collide. All names must be unique.</p>
       <div class="table-wrap">
         <table class="data">
           <thead>
-            <tr>
-              <th>#</th><th>Title</th><th>Pages</th><th>Output filename</th>
-              ${state.previewEnabled ? '<th class="preview-th">Preview</th>' : ''}
-            </tr>
+            <tr><th>#</th><th>Title</th><th>Pages</th><th>Output filename</th></tr>
           </thead>
           <tbody>
             ${state.chapterRows
               .map((row, i) => {
                 const dup = dupChapter.has(i);
+                const open = state.previewOpen.has(i);
                 const offset = state.previewCurrentPages[i] ?? 0;
                 const pageCount = row.endPage0 - row.startPage0 + 1;
+                const eyeIcon = open
+                  ? /* eye-off */ `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
+                  : /* eye    */ `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
                 return `<tr data-chapter-idx="${i}" class="${dup ? 'row-dup' : ''}">
                   <td>${i + 1}</td>
                   <td>${escapeHtml(row.title)}</td>
@@ -433,21 +432,25 @@ function render(): void {
                   <td>
                     <div class="filename-cell">
                       <input type="text" class="filename-input" data-chapter-idx="${i}" value="${escapeHtml(row.outputName)}" />
+                      <button type="button" class="btn-small preview-toggle ${open ? 'active' : ''}" data-toggle-preview="${i}" title="${open ? 'Hide preview' : 'Show preview'}">${eyeIcon}</button>
                       <button type="button" class="btn-small dl-btn" data-dl-chapter="${i}" title="Download this chapter">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                       </button>
                     </div>
                   </td>
-                  ${state.previewEnabled ? `
-                  <td class="preview-cell">
-                    <canvas data-preview-idx="${i}"></canvas>
-                    <div class="preview-nav">
-                      <button type="button" class="preview-btn" data-preview-prev="${i}" ${offset === 0 ? 'disabled' : ''}>&#8249;</button>
-                      <span class="preview-pg">${offset + 1} / ${pageCount}</span>
-                      <button type="button" class="preview-btn" data-preview-next="${i}" ${offset >= pageCount - 1 ? 'disabled' : ''}>&#8250;</button>
+                </tr>
+                ${open ? `<tr class="preview-row">
+                  <td colspan="4" class="preview-expand-cell">
+                    <div class="preview-expand">
+                      <canvas data-preview-idx="${i}"></canvas>
+                      <div class="preview-nav">
+                        <button type="button" class="preview-btn" data-preview-prev="${i}" ${offset === 0 ? 'disabled' : ''}>&#8249;</button>
+                        <span class="preview-pg">${offset + 1} / ${pageCount}</span>
+                        <button type="button" class="preview-btn" data-preview-next="${i}" ${offset >= pageCount - 1 ? 'disabled' : ''}>&#8250;</button>
+                      </div>
                     </div>
-                  </td>` : ''}
-                </tr>`;
+                  </td>
+                </tr>` : ''}`;
               })
               .join('')}
           </tbody>
@@ -572,10 +575,19 @@ function render(): void {
     input.addEventListener('change', () => render());
   });
 
-  // Toggle preview panel
-  app.querySelector('[data-action="toggle-preview"]')?.addEventListener('click', () => {
-    state.previewEnabled = !state.previewEnabled;
-    render();
+  // Per-chapter preview toggle (eye button)
+  app.querySelectorAll('[data-toggle-preview]').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = Number((el as HTMLElement).dataset.togglePreview);
+      if (state.previewOpen.has(idx)) {
+        state.previewOpen.delete(idx);
+        delete state.previewCurrentPages[idx]; // reset page position when closing
+      } else {
+        state.previewOpen.add(idx);
+      }
+      render();
+    });
   });
 
   // Per-chapter download buttons
@@ -669,7 +681,7 @@ function render(): void {
   });
 
   // Kick off async canvas rendering after the synchronous DOM update settles.
-  if (state.previewEnabled && state.chapterRows.length > 0) {
+  if (state.previewOpen.size > 0 && state.chapterRows.length > 0) {
     void Promise.resolve().then(() => void renderPreviews(myRenderGen));
   }
 }
