@@ -309,7 +309,10 @@ async function renderPreviews(myRenderGen: number): Promise<void> {
     try {
       const page = await pdf.getPage(absPage);
       const baseVp = page.getViewport({ scale: 1 });
-      const scale = Math.min(160 / baseVp.width, 220 / baseVp.height);
+      // Fill the full available cell width (subtract cell padding on both sides).
+      const cell = canvas.closest('.preview-expand-cell') as HTMLElement | null;
+      const availWidth = cell ? cell.clientWidth - 24 : 640;
+      const scale = availWidth / baseVp.width;
       const viewport = page.getViewport({ scale });
       canvas.width = Math.round(viewport.width);
       canvas.height = Math.round(viewport.height);
