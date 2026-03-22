@@ -210,6 +210,12 @@ select {
   border-bottom: 2px solid #2a2f3d;
 }
 
+/* Subtle accent border when this preview owns arrow-key focus */
+.preview-focused .preview-expand-cell {
+  border-bottom-color: #5b4cdb;
+  box-shadow: inset 3px 0 0 #5b4cdb;
+}
+
 .preview-expand {
   display: block;
 }

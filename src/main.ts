@@ -46,6 +46,8 @@ const state = {
   previewOpen: new Set<number>(),
   /** Per-chapter page offset (0-based) relative to each chapter's startPage0. */
   previewCurrentPages: {} as Record<number, number>,
+  /** Which chapter's preview the arrow keys currently control (null = none). */
+  previewFocused: null as number | null,
 };
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -78,6 +80,38 @@ app.addEventListener(
   },
   true,
 );
+
+/** Arrow-key navigation for whichever preview panel last received focus. */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  // Don't hijack when the user is typing in an input / select.
+  const active = document.activeElement;
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return;
+  if (state.previewOpen.size === 0) return;
+
+  // Resolve focused chapter: fall back to first open one if needed.
+  let idx = state.previewFocused;
+  if (idx === null || !state.previewOpen.has(idx)) {
+    idx = [...state.previewOpen][0] ?? null;
+    state.previewFocused = idx;
+  }
+  if (idx === null) return;
+
+  const row = state.chapterRows[idx];
+  if (!row) return;
+
+  const max = row.endPage0 - row.startPage0;
+  const current = state.previewCurrentPages[idx] ?? 0;
+  if (e.key === 'ArrowLeft' && current > 0) {
+    e.preventDefault();
+    state.previewCurrentPages[idx] = current - 1;
+    render();
+  } else if (e.key === 'ArrowRight' && current < max) {
+    e.preventDefault();
+    state.previewCurrentPages[idx] = current + 1;
+    render();
+  }
+});
 
 function clearZipReady(): void {
   if (state.zipReady) {
@@ -159,6 +193,7 @@ async function loadPdf(file: File): Promise<void> {
   if (previewPdf) { void previewPdf.destroy().catch(() => {}); previewPdf = null; }
   state.previewOpen = new Set();
   state.previewCurrentPages = {};
+  state.previewFocused = null;
   render();
   try {
     const buf = new Uint8Array(await file.arrayBuffer());
@@ -253,7 +288,8 @@ function rebuildChapterRows(): void {
     return;
   }
   state.previewOpen = new Set();
-  state.previewCurrentPages = {}; // reset page offsets when chapters change
+  state.previewCurrentPages = {};
+  state.previewFocused = null; // reset page offsets when chapters change
   const markers = markersForDepth(state.chapterDepth);
   const n = state.numPages;
   const rows: ChapterRow[] = [];
@@ -442,7 +478,7 @@ function render(): void {
                     </div>
                   </td>
                 </tr>
-                ${open ? `<tr class="preview-row">
+                ${open ? `<tr class="preview-row${state.previewFocused === i ? ' preview-focused' : ''}">
                   <td colspan="4" class="preview-expand-cell">
                     <div class="preview-expand">
                       <canvas data-preview-idx="${i}"></canvas>
@@ -586,8 +622,13 @@ function render(): void {
       if (state.previewOpen.has(idx)) {
         state.previewOpen.delete(idx);
         delete state.previewCurrentPages[idx]; // reset page position when closing
+        // Hand focus to another open preview, or clear it.
+        if (state.previewFocused === idx) {
+          state.previewFocused = state.previewOpen.size > 0 ? [...state.previewOpen][0] ?? null : null;
+        }
       } else {
         state.previewOpen.add(idx);
+        state.previewFocused = idx; // newly opened preview captures arrow-key focus
       }
       render();
     });
@@ -606,6 +647,7 @@ function render(): void {
   app.querySelectorAll('[data-preview-prev]').forEach((el) => {
     el.addEventListener('click', () => {
       const idx = Number((el as HTMLElement).dataset.previewPrev);
+      state.previewFocused = idx; // clicking nav transfers arrow-key focus here
       state.previewCurrentPages[idx] = Math.max(0, (state.previewCurrentPages[idx] ?? 0) - 1);
       render();
     });
@@ -613,6 +655,7 @@ function render(): void {
   app.querySelectorAll('[data-preview-next]').forEach((el) => {
     el.addEventListener('click', () => {
       const idx = Number((el as HTMLElement).dataset.previewNext);
+      state.previewFocused = idx; // clicking nav transfers arrow-key focus here
       const row = state.chapterRows[idx];
       if (!row) return;
       const max = row.endPage0 - row.startPage0;
